@@ -273,7 +273,7 @@ class ToolBox:
                 "type": "function",
                 "function": {
                     "name": "add_adr",
-                    "description": "Record an architecture decision record (draft until the user approves it and a PR is recorded).",
+                    "description": "Record an architecture decision record (draft until the user approves it and a PR is recorded). Write every field in English (never Chinese) unless the user explicitly asks for another language.",
                     "parameters": {
                         "type": "object",
                         "properties": {

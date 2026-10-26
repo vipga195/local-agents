@@ -79,6 +79,23 @@ class TestAgent(unittest.TestCase):
         self.assertEqual(result['outcome'], 'done')
         self.assertEqual(result['answer'], 'x')
 
+    def test_only_first_tool_call_runs(self):
+        (self.root_dir / 'a.txt').touch()
+        multi = {'role': 'assistant', 'content': '', 'tool_calls': [
+            {'function': {'name': 'list_dir', 'arguments': {'path': '.'}}},
+            {'function': {'name': 'finish', 'arguments': {'answer': 'early'}}},
+        ]}
+        self.brain = FakeBrain([multi, tool_msg('finish', {'answer': 'late'})])
+        result = run('multi', self.brain, self.memory, self.toolbox)
+        self.assertEqual(result['answer'], 'late')
+        step = self.memory.get_run(result['run_id'])['steps'][0]
+        self.assertEqual([c['name'] for c in step['calls']], ['list_dir'])
+        self.assertEqual(len(step['results']), 1)
+        second_messages = self.brain.calls[1][0]
+        assistant = [m for m in second_messages if m.get('role') == 'assistant'][0]
+        self.assertEqual(len(assistant['tool_calls']), 1)
+        self.assertEqual(sum(1 for m in second_messages if m.get('role') == 'tool'), 1)
+
     def test_max_steps(self):
         self.brain = FakeBrain([tool_msg('list_dir', {'path': '.'})] * 10)
         result = run('list many', self.brain, self.memory, self.toolbox, max_steps=3)
@@ -388,6 +405,18 @@ class TestMaxTokens(unittest.TestCase):
         result = run('go', brain, self.memory, self.toolbox, max_tokens=second)
         self.assertEqual(len(brain.calls), 1)
         self.assertTrue(result['outcome'].startswith('error: context limit'))
+
+class TestMainConfigError(unittest.TestCase):
+    def test_invalid_config_exits_2(self):
+        import subprocess, sys
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, 'config.toml')
+            Path(cfg).write_text('[limits\n')
+            env = {**os.environ, 'AGENT_CONFIG': cfg, 'AGENT_DB': os.path.join(d, 'm.db')}
+            r = subprocess.run([sys.executable, 'agent.py', '--no-distill', 'hi'], cwd=os.path.dirname(os.path.abspath(__file__)),
+                               env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('invalid TOML', r.stderr)
 
 if __name__ == '__main__':
     unittest.main()

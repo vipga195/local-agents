@@ -87,7 +87,7 @@ Xong:
 
 Còn lại / hạn chế:
 - Tìm node đã rút gọn chỉ theo tên/summary (prompt đã dời sang file). Model hay đặt tên cạnh không thống nhất (`appears_in` / `has_character`).
-- Model 7B hay đoán sai `model`/`sampler_name` và gọi nhiều tool trong một lượt; hiện chỉ giảm bằng `DRAWTHINGS_PROMPT`. Sửa chắc hơn: chỉ thực thi tool call đầu tiên mỗi lượt, hoặc từ chối `ask_choice` khi chưa gửi ảnh.
+- Model 7B hay đoán sai `model`/`sampler_name`; hiện chỉ giảm bằng `DRAWTHINGS_PROMPT`. Việc gọi nhiều tool một lượt đã xử lý: `agent.py` chỉ thực thi tool call đầu tiên mỗi lượt và cắt các call còn lại khỏi lịch sử.
 - Bài học tự sinh có thể khái quát quá mức từ một lần chọn; cần duyệt tay.
 - `aux` mới dùng để đặt tên run (chưa nén ngữ cảnh); fallback/aux chưa chạy thật với model.
 - Chưa đối chiếu ước lượng token với số thật; chưa kiểm `temperature` cho Anthropic; chưa đo tỉ lệ model 7B gọi tool sai.
