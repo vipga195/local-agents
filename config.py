@@ -40,12 +40,48 @@ def load_config(path=None) -> dict:
     warn = config['limits'].get('warn_tokens')
     if not isinstance(warn, int) or isinstance(warn, bool) or warn <= 0:
         raise ConfigError('limits.warn_tokens must be a positive integer')
+    max_tokens = config['limits'].get('max_tokens')
+    if max_tokens is not None and (not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0):
+        raise ConfigError('limits.max_tokens must be a positive integer')
+    if max_tokens is not None and max_tokens < warn:
+        raise ConfigError('limits.max_tokens must be >= limits.warn_tokens')
+    min_context = config['limits'].get('min_context')
+    if min_context is not None and (not isinstance(min_context, int) or isinstance(min_context, bool) or min_context <= 0):
+        raise ConfigError('limits.min_context must be a positive integer')
+    for name, slot in config['slots'].items():
+        if 'context' in slot:
+            context = slot['context']
+            if not isinstance(context, int) or isinstance(context, bool) or context <= 0:
+                raise ConfigError(f'slot {name} context must be a positive integer')
     return config
 
 
 def get_warn_tokens(config) -> int:
     """Return the cumulative-token warning threshold."""
     return config['limits']['warn_tokens']
+
+
+def get_max_tokens(config):
+    """Return the hard context limit (limits.max_tokens) or None."""
+    return config['limits'].get('max_tokens')
+
+
+def check_min_context(config, slot_names):
+    """Raise ConfigError if a named slot's declared context violates limits.min_context or max_tokens."""
+    min_context = config['limits'].get('min_context')
+    max_tokens = config['limits'].get('max_tokens')
+    for name in slot_names:
+        slot = get_optional_slot(config, name)
+        if slot is None:
+            continue
+        context = slot.get('context')
+        if min_context is not None:
+            if context is None:
+                raise ConfigError(f'slot {name} must declare context when limits.min_context is set')
+            if context < min_context:
+                raise ConfigError(f'slot {name} context {context} is below limits.min_context {min_context}')
+        if max_tokens is not None and context is not None and max_tokens > context:
+            raise ConfigError(f'limits.max_tokens {max_tokens} exceeds slot {name} context {context}')
 
 
 def get_slot(config, name='main') -> dict:

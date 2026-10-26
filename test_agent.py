@@ -358,5 +358,36 @@ class TestToolBox(unittest.TestCase):
             os.unlink(path)
         self.assertEqual(c('get_node', {'type': 'script', 'name': 'Slim'}), f'script:Slim - sum\ndistilled file missing: {path}')
 
+class TestMaxTokens(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.memory = Memory(Path(self.temp_dir) / 'm.db')
+        self.toolbox = ToolBox(self.memory, self.temp_dir)
+
+    def tearDown(self):
+        self.memory.close()
+        shutil.rmtree(self.temp_dir)
+
+    def test_small_limit_blocks_brain(self):
+        brain = FakeBrain([text_msg('x')])
+        result = run('go', brain, self.memory, self.toolbox, max_tokens=1)
+        self.assertTrue(result['outcome'].startswith('error: context limit'))
+        self.assertEqual(result['answer'], '')
+        self.assertEqual(brain.calls, [])
+
+    def test_none_unchanged(self):
+        result = run('go', FakeBrain([text_msg('ok')]), self.memory, self.toolbox, max_tokens=None)
+        self.assertEqual(result['outcome'], 'done')
+
+    def test_limit_hit_on_later_step(self):
+        probe = FakeBrain([tool_msg('list_dir', {'path': '.'}), text_msg('ok')])
+        run('go', probe, self.memory, self.toolbox)
+        first, second = (estimate_tokens(m, t) for m, t in probe.calls)
+        self.assertGreater(second, first)
+        brain = FakeBrain([tool_msg('list_dir', {'path': '.'}), text_msg('ok')])
+        result = run('go', brain, self.memory, self.toolbox, max_tokens=second)
+        self.assertEqual(len(brain.calls), 1)
+        self.assertTrue(result['outcome'].startswith('error: context limit'))
+
 if __name__ == '__main__':
     unittest.main()

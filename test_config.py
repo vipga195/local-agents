@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from config import ConfigError, load_config, get_slot, get_warn_tokens, make_brain, get_fallback_slot_name, get_optional_slot
+from config import ConfigError, load_config, get_slot, get_warn_tokens, make_brain, get_fallback_slot_name, get_optional_slot, get_max_tokens, check_min_context
 
 
 class TestConfig(unittest.TestCase):
@@ -155,6 +155,58 @@ class TestConfig(unittest.TestCase):
     def test_fallback_key_ignored_by_make_brain(self):
         brain = make_brain({'provider': 'ollama', 'model': 'm', 'fallback': 'aux'})
         self.assertEqual(brain.model, 'm')
+
+
+class TestLimits(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def load(self, text):
+        p = self.dir / 'config.toml'
+        p.write_text(text)
+        return load_config(p)
+
+    def test_max_tokens_valid_and_default_none(self):
+        self.assertIsNone(get_max_tokens(load_config(self.dir / 'nope.toml')))
+        self.assertEqual(get_max_tokens(self.load('[limits]\nmax_tokens = 200000\n')), 200000)
+
+    def test_max_tokens_invalid(self):
+        for bad in ('"x"', 'true', '0', '-5', '50000'):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ConfigError):
+                    self.load(f'[limits]\nmax_tokens = {bad}\n')
+
+    def test_min_context_and_context_invalid(self):
+        for text in ('[limits]\nmin_context = "x"\n', '[limits]\nmin_context = true\n',
+                     '[limits]\nmin_context = 0\n', '[slots.main]\ncontext = "x"\n',
+                     '[slots.main]\ncontext = false\n', '[slots.main]\ncontext = -1\n'):
+            with self.subTest(text=text):
+                with self.assertRaises(ConfigError):
+                    self.load(text)
+
+    def test_check_min_context_noop_when_unset(self):
+        check_min_context(self.load('[slots.main]\ncontext = 10\n'), ['main', 'aux'])
+
+    def test_check_min_context_undeclared(self):
+        cfg = self.load('[limits]\nmin_context = 8000\n')
+        with self.assertRaisesRegex(ConfigError, 'slot main must declare context'):
+            check_min_context(cfg, ['main'])
+
+    def test_check_min_context_too_small_and_ok(self):
+        cfg = self.load('[limits]\nmin_context = 8000\n[slots.main]\ncontext = 4000\n[slots.aux]\ncontext = 16000\n')
+        with self.assertRaisesRegex(ConfigError, '4000.*8000'):
+            check_min_context(cfg, ['main'])
+        check_min_context(cfg, ['aux', 'missing'])
+
+    def test_check_max_tokens_exceeds_context(self):
+        cfg = self.load('[limits]\nmax_tokens = 150000\n[slots.main]\ncontext = 32000\n')
+        with self.assertRaises(ConfigError):
+            check_min_context(cfg, ['main'])
+        check_min_context(cfg, ['aux'])
 
 
 if __name__ == '__main__':

@@ -8,7 +8,7 @@ from pathlib import Path
 from memory import Memory
 from distill import distill_session
 from brain import BrainError, tool_calls
-from config import ConfigError, load_config, get_slot, get_warn_tokens, make_brain, get_fallback_slot_name, get_optional_slot
+from config import ConfigError, load_config, get_slot, get_warn_tokens, get_max_tokens, check_min_context, make_brain, get_fallback_slot_name, get_optional_slot
 from rules import load_rules
 from tools import ToolBox
 from mcp_client import McpClient, McpError
@@ -53,7 +53,7 @@ def name_run(memory, run_id, goal, aux):
     except Exception:
         return
 
-def run(goal, brain, memory, toolbox, max_steps=8, rules='', warn_tokens=None, fallback=None) -> dict:
+def run(goal, brain, memory, toolbox, max_steps=8, rules='', warn_tokens=None, fallback=None, max_tokens=None) -> dict:
     run_id = memory.start_run(goal)
     answer = ''
     outcome = 'max_steps'
@@ -72,6 +72,10 @@ def run(goal, brain, memory, toolbox, max_steps=8, rules='', warn_tokens=None, f
             if warn_tokens and est >= warn_tokens and not warned:
                 warned = True
                 print(f'warning: session context ~{est} tokens (estimate, threshold {warn_tokens})', file=sys.stderr)
+            if max_tokens and est >= max_tokens:
+                outcome = f'error: context limit reached (~{est} tokens, max {max_tokens})'
+                answer = ''
+                break
             try:
                 message = None
                 while message is None:
@@ -139,6 +143,7 @@ if __name__ == '__main__':
         fallback = make_brain(get_slot(config, fallback_name)) if fallback_name else None
         aux_slot = get_optional_slot(config, 'aux')
         aux = make_brain(aux_slot) if aux_slot is not None else None
+        check_min_context(config, ['main', fallback_name, 'aux'] if fallback_name else ['main', 'aux'])
     except ConfigError as e:
         print(f'error: {e}', file=sys.stderr)
         memory.close()
@@ -160,7 +165,7 @@ if __name__ == '__main__':
     try:
         toolbox = ToolBox(memory, args.root, mcp=mcp, claude=ClaudeCli(args.root) if args.with_claude else None)
         result = run(args.goal, brain, memory, toolbox, args.max_steps, rules=rules,
-                     warn_tokens=get_warn_tokens(config), fallback=fallback)
+                     warn_tokens=get_warn_tokens(config), fallback=fallback, max_tokens=get_max_tokens(config))
         if aux is not None:
             name_run(memory, result['run_id'], args.goal, aux)
     finally:

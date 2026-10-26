@@ -40,12 +40,14 @@ model = "qwen2.5:7b"
 
 [limits]
 warn_tokens = 100000           # số nguyên dương
+# max_tokens = 120000          # tùy chọn: chặn cứng, phải >= warn_tokens
+# min_context = 32768          # tùy chọn: mọi slot đang dùng phải khai báo `context` >= mức này
 ```
 
 - Không có file → mặc định Ollama. File lỗi TOML/không đọc được/slot hoặc khóa sai → in `error:` và thoát mã 2.
 - `main.fallback = "<tên slot>"` (slot phải tồn tại, khác `main`): main lỗi lần 1 thì thử lại bước đó, lỗi lần 2 liên tiếp thì chuyển sang slot fallback cho phần còn lại của phiên, ghi lý do vào `runs.route`. Không khai báo thì lỗi brain kết thúc phiên như cũ.
 - Slot `aux` (nếu khai báo): sau phiên, aux đặt tiêu đề ngắn cho run (`runs.title`), best-effort, lỗi bị bỏ qua.
-- `warn_tokens`: chỉ cảnh báo (stderr) một lần khi ước lượng token tích lũy vượt ngưỡng (ước lượng theo 3 ký tự/token, không phải số thật); chưa chặn cứng.
+- `warn_tokens`: chỉ cảnh báo (stderr) một lần khi ước lượng token tích lũy vượt ngưỡng (ước lượng theo 3 ký tự/token, không phải số thật); `max_tokens` (nếu đặt) chặn cứng: chạm ngưỡng thì không gọi model nữa, phiên kết thúc `error: context limit reached`. `context` (khai báo ở slot) do bạn tự ghi, agent không đo; `max_tokens` không được lớn hơn `context`.
 
 ## Luật người dùng
 
@@ -87,6 +89,6 @@ Còn lại / hạn chế:
 - Tìm node đã rút gọn chỉ theo tên/summary (prompt đã dời sang file). Model hay đặt tên cạnh không thống nhất (`appears_in` / `has_character`).
 - Model 7B hay đoán sai `model`/`sampler_name` và gọi nhiều tool trong một lượt; hiện chỉ giảm bằng `DRAWTHINGS_PROMPT`. Sửa chắc hơn: chỉ thực thi tool call đầu tiên mỗi lượt, hoặc từ chối `ask_choice` khi chưa gửi ảnh.
 - Bài học tự sinh có thể khái quát quá mức từ một lần chọn; cần duyệt tay.
-- `aux` mới dùng để đặt tên run (chưa nén ngữ cảnh); fallback/aux chưa chạy thật với model; chưa có ngưỡng token chặn cứng hay kiểm context tối thiểu.
+- `aux` mới dùng để đặt tên run (chưa nén ngữ cảnh); fallback/aux chưa chạy thật với model.
 - Chưa đối chiếu ước lượng token với số thật; chưa kiểm `temperature` cho Anthropic; chưa đo tỉ lệ model 7B gọi tool sai.
 - Chưa test đủ đường thoát lỗi config; chưa cài `gitleaks`.
