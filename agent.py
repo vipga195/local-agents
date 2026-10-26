@@ -8,7 +8,7 @@ from pathlib import Path
 from memory import Memory
 from distill import distill_session
 from brain import BrainError, tool_calls
-from config import ConfigError, load_config, get_slot, get_warn_tokens, make_brain
+from config import ConfigError, load_config, get_slot, get_warn_tokens, make_brain, get_fallback_slot_name, get_optional_slot
 from rules import load_rules
 from tools import ToolBox
 from mcp_client import McpClient, McpError
@@ -41,7 +41,19 @@ def build_messages(goal, memory, extra='', rules='') -> list[dict]:
         text += '\nPossibly relevant lessons (proposed ones are unverified):\n' + '\n'.join(f"#{h['id']} [{h['status']}] when: {h['situation']} -> rule: {h['rule']}" for h in hits)
     return [{'role': 'system', 'content': text}, {'role': 'user', 'content': goal}]
 
-def run(goal, brain, memory, toolbox, max_steps=8, rules='', warn_tokens=None) -> dict:
+def name_run(memory, run_id, goal, aux):
+    """Best-effort: store a short title for the run via the aux brain; never raises."""
+    try:
+        reply = aux.chat([{'role': 'system', 'content': 'Write a title of at most 8 words for this goal. Reply with the title only.'}, {'role': 'user', 'content': goal}])
+        text = (reply.get('content') or '').strip()
+        title = text.splitlines()[0].strip(' \t"\'') if text else ''
+        title = title[:80]
+        if title:
+            memory.set_title(run_id, title)
+    except Exception:
+        return
+
+def run(goal, brain, memory, toolbox, max_steps=8, rules='', warn_tokens=None, fallback=None) -> dict:
     run_id = memory.start_run(goal)
     answer = ''
     outcome = 'max_steps'
@@ -50,6 +62,8 @@ def run(goal, brain, memory, toolbox, max_steps=8, rules='', warn_tokens=None) -
     toolbox.begin_run(run_id, goal)
     extra = '\n'.join(p for p in (DRAWTHINGS_PROMPT if toolbox.has_mcp else '', CLAUDE_PROMPT if getattr(toolbox, 'has_claude', False) else '') if p)
     messages = build_messages(goal, memory, extra, rules)
+    current = brain
+    failures = 0  # consecutive main-brain failures
     try:
         for step_no in range(1, max_steps + 1):
             specs = toolbox.specs()
@@ -59,7 +73,19 @@ def run(goal, brain, memory, toolbox, max_steps=8, rules='', warn_tokens=None) -
                 warned = True
                 print(f'warning: session context ~{est} tokens (estimate, threshold {warn_tokens})', file=sys.stderr)
             try:
-                message = brain.chat(messages, specs)
+                message = None
+                while message is None:
+                    try:
+                        message = current.chat(messages, specs)
+                        failures = 0
+                    except BrainError as e:
+                        if fallback is None or current is fallback:
+                            raise
+                        # first main failure: retry the same step with main; second: switch to fallback
+                        failures += 1
+                        if failures >= 2:
+                            memory.add_route(run_id, f'fallback after 2 main failures: {e}')
+                            current = fallback
             except BrainError as e:
                 outcome = f'error: {e}'
                 answer = ''
@@ -109,6 +135,10 @@ if __name__ == '__main__':
         config = load_config()
         slot = get_slot(config)
         brain = make_brain(slot)
+        fallback_name = get_fallback_slot_name(config)
+        fallback = make_brain(get_slot(config, fallback_name)) if fallback_name else None
+        aux_slot = get_optional_slot(config, 'aux')
+        aux = make_brain(aux_slot) if aux_slot is not None else None
     except ConfigError as e:
         print(f'error: {e}', file=sys.stderr)
         memory.close()
@@ -130,7 +160,9 @@ if __name__ == '__main__':
     try:
         toolbox = ToolBox(memory, args.root, mcp=mcp, claude=ClaudeCli(args.root) if args.with_claude else None)
         result = run(args.goal, brain, memory, toolbox, args.max_steps, rules=rules,
-                     warn_tokens=get_warn_tokens(config))
+                     warn_tokens=get_warn_tokens(config), fallback=fallback)
+        if aux is not None:
+            name_run(memory, result['run_id'], args.goal, aux)
     finally:
         if mcp:
             mcp.close()

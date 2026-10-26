@@ -56,6 +56,25 @@ def get_slot(config, name='main') -> dict:
     return slot
 
 
+def get_optional_slot(config, name) -> dict:
+    """Return the named slot or None (never raises)."""
+    return config.get('slots', {}).get(name)
+
+
+def get_fallback_slot_name(config):
+    """Return main.fallback (a slot name) or None; raise ConfigError if invalid."""
+    value = get_slot(config, 'main').get('fallback')
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConfigError('main.fallback must be a slot name string')
+    if value == 'main':
+        raise ConfigError('main.fallback must not be main')
+    if get_optional_slot(config, value) is None:
+        raise ConfigError(f'unknown fallback slot {value!r}')
+    return value
+
+
 def make_brain(slot):
     """Build a brain for a slot; None host/model fall back inside the brain."""
     provider = slot.get('provider')

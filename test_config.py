@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from config import ConfigError, load_config, get_slot, get_warn_tokens, make_brain
+from config import ConfigError, load_config, get_slot, get_warn_tokens, make_brain, get_fallback_slot_name, get_optional_slot
 
 
 class TestConfig(unittest.TestCase):
@@ -122,6 +122,39 @@ class TestConfig(unittest.TestCase):
             with self.assertRaises(ConfigError) as cm:
                 make_brain({'provider': 'anthropic', 'model': 'm', 'api_key_env': 'MY_KEY'})
             self.assertIn('MY_KEY', str(cm.exception))
+
+    def test_fallback_default_none(self):
+        cfg = load_config(self.dir / 'nope.toml')
+        self.assertIsNone(get_fallback_slot_name(cfg))
+
+    def test_fallback_valid_name(self):
+        p = self.write('[slots.main]\nfallback = "aux"\n[slots.aux]\nprovider = "ollama"\nmodel = "small"\n')
+        self.assertEqual(get_fallback_slot_name(load_config(p)), 'aux')
+
+    def test_fallback_unknown_slot_raises(self):
+        p = self.write('[slots.main]\nfallback = "zzz"\n')
+        with self.assertRaises(ConfigError):
+            get_fallback_slot_name(load_config(p))
+
+    def test_fallback_equals_main_raises(self):
+        p = self.write('[slots.main]\nfallback = "main"\n')
+        with self.assertRaises(ConfigError):
+            get_fallback_slot_name(load_config(p))
+
+    def test_fallback_non_string_raises(self):
+        p = self.write('[slots.main]\nfallback = 1\n')
+        with self.assertRaises(ConfigError):
+            get_fallback_slot_name(load_config(p))
+
+    def test_get_optional_slot(self):
+        p = self.write('[slots.main]\nprovider = "ollama"\nmodel = "m2"\n')
+        cfg = load_config(p)
+        self.assertIsNone(get_optional_slot(cfg, 'aux'))
+        self.assertEqual(get_optional_slot(cfg, 'main'), {'provider': 'ollama', 'model': 'm2', 'host': None})
+
+    def test_fallback_key_ignored_by_make_brain(self):
+        brain = make_brain({'provider': 'ollama', 'model': 'm', 'fallback': 'aux'})
+        self.assertEqual(brain.model, 'm')
 
 
 if __name__ == '__main__':

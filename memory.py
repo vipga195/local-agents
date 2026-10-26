@@ -69,7 +69,8 @@ class Memory:
                 outcome TEXT DEFAULT '',
                 steps TEXT DEFAULT '[]',
                 route TEXT DEFAULT '',
-                user_verdict TEXT DEFAULT ''
+                user_verdict TEXT DEFAULT '',
+                title TEXT NOT NULL DEFAULT ''
             )
         ''')
         self.conn.execute('''
@@ -131,6 +132,9 @@ class Memory:
                 UNIQUE(src, rel, dst)
             )
         ''')
+        # Migrate DBs created before runs.title existed
+        if 'title' not in [r['name'] for r in self.conn.execute('PRAGMA table_info(runs)')]:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN title TEXT NOT NULL DEFAULT ''")
 
 
     def set_profile(self, key, value):
@@ -337,6 +341,21 @@ class Memory:
 
     def set_verdict(self, run_id, verdict):
         self.conn.execute('UPDATE runs SET user_verdict=? WHERE id=?', (verdict, run_id))
+        self.conn.commit()
+
+    def set_title(self, run_id, title):
+        cursor = self.conn.execute('UPDATE runs SET title=? WHERE id=?', (title, run_id))
+        if cursor.rowcount == 0:
+            raise ValueError(f'Unknown run ID: {run_id}')
+        self.conn.commit()
+
+    def add_route(self, run_id, note):
+        row = self.conn.execute('SELECT route FROM runs WHERE id=?', (run_id,)).fetchone()
+        if row is None:
+            raise ValueError(f'Unknown run ID: {run_id}')
+        route = row['route']
+        route = route + '; ' + note if route else note
+        self.conn.execute('UPDATE runs SET route=? WHERE id=?', (route, run_id))
         self.conn.commit()
 
     def get_run(self, run_id):

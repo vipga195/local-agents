@@ -6,10 +6,11 @@ import copy
 import io
 from contextlib import redirect_stderr
 from pathlib import Path
+import sqlite3
 from memory import Memory
 from brain import BrainError, tool_calls
 from tools import ToolBox
-from agent import run, build_messages, estimate_tokens
+from agent import run, build_messages, estimate_tokens, name_run
 
 class FakeBrain:
     def __init__(self, replies):
@@ -156,6 +157,121 @@ class TestAgent(unittest.TestCase):
         want = max(estimate_tokens(m, t) for m, t in calls)
         self.assertEqual(result['tokens'], want)
         self.assertGreater(want, 0)
+
+class TestFallback(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.root_dir = Path(self.temp_dir) / 'root'
+        self.root_dir.mkdir()
+        self.memory = Memory(Path(self.temp_dir) / 'memory.db')
+        self.toolbox = ToolBox(self.memory, self.root_dir)
+
+    def tearDown(self):
+        self.memory.close()
+        shutil.rmtree(self.temp_dir)
+
+    def test_no_fallback_error_unchanged(self):
+        main = FakeBrain([BrainError('x')])
+        result = run('test', main, self.memory, self.toolbox)
+        self.assertEqual(result['outcome'], 'error: x')
+        self.assertEqual(result['answer'], '')
+        self.assertEqual(len(main.calls), 1)
+
+    def test_retry_main_once_no_route(self):
+        main = FakeBrain([BrainError('a'), text_msg('ok')])
+        fb = FakeBrain([])
+        result = run('test', main, self.memory, self.toolbox, fallback=fb)
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(result['answer'], 'ok')
+        self.assertEqual(len(main.calls), 2)
+        self.assertEqual(len(fb.calls), 0)
+        self.assertEqual(self.memory.get_run(result['run_id'])['route'], '')
+
+    def test_retry_does_not_use_extra_step(self):
+        main = FakeBrain([BrainError('a'), text_msg('ok')])
+        result = run('test', main, self.memory, self.toolbox, max_steps=1, fallback=FakeBrain([]))
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(result['answer'], 'ok')
+        self.assertEqual(len(main.calls), 2)
+
+    def test_fallback_after_two_main_failures(self):
+        main = FakeBrain([BrainError('a'), BrainError('b')])
+        fb = FakeBrain([text_msg('from fb')])
+        result = run('test', main, self.memory, self.toolbox, fallback=fb)
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(result['answer'], 'from fb')
+        self.assertEqual(len(main.calls), 2)
+        self.assertEqual(len(fb.calls), 1)
+        self.assertEqual(self.memory.get_run(result['run_id'])['route'], 'fallback after 2 main failures: b')
+
+    def test_main_and_fallback_fail(self):
+        main = FakeBrain([BrainError('a'), BrainError('b')])
+        fb = FakeBrain([BrainError('c')])
+        result = run('test', main, self.memory, self.toolbox, fallback=fb)
+        self.assertEqual(result['outcome'], 'error: c')
+        self.assertEqual(result['answer'], '')
+        self.assertEqual(len(main.calls), 2)
+        self.assertEqual(len(fb.calls), 1)
+
+    def test_counter_resets_after_success(self):
+        main = FakeBrain([BrainError('a'), tool_msg('list_dir', {'path': '.'}), BrainError('b'), text_msg('ok')])
+        fb = FakeBrain([])
+        result = run('test', main, self.memory, self.toolbox, fallback=fb, max_steps=3)
+        self.assertEqual(result['outcome'], 'done')
+        self.assertEqual(result['answer'], 'ok')
+        self.assertEqual(len(fb.calls), 0)
+        self.assertEqual(self.memory.get_run(result['run_id'])['route'], '')
+
+    def test_name_run_stores_cleaned_title(self):
+        run_id = self.memory.start_run('goal')
+        aux = FakeBrain([text_msg('  "Build a Pipeline"\nextra line')])
+        name_run(self.memory, run_id, 'goal', aux)
+        title = self.memory.get_run(run_id)['title']
+        self.assertEqual(title, 'Build a Pipeline')
+        self.assertIsNone(aux.calls[0][1])
+
+    def test_name_run_truncates_to_80(self):
+        run_id = self.memory.start_run('goal')
+        aux = FakeBrain([text_msg('a' * 100)])
+        name_run(self.memory, run_id, 'goal', aux)
+        title = self.memory.get_run(run_id)['title']
+        self.assertEqual(len(title), 80)
+
+    def test_name_run_ignores_brain_error(self):
+        run_id = self.memory.start_run('goal')
+        aux = FakeBrain([BrainError('x')])
+        name_run(self.memory, run_id, 'goal', aux)
+        title = self.memory.get_run(run_id)['title']
+        self.assertEqual(title, '')
+
+    def test_name_run_empty_reply(self):
+        run_id = self.memory.start_run('goal')
+        aux = FakeBrain([text_msg('   ')])
+        name_run(self.memory, run_id, 'goal', aux)
+        title = self.memory.get_run(run_id)['title']
+        self.assertEqual(title, '')
+
+    def test_add_route_appends(self):
+        run_id = self.memory.start_run('goal')
+        self.memory.add_route(run_id, 'a')
+        self.memory.add_route(run_id, 'b')
+        route = self.memory.get_run(run_id)['route']
+        self.assertEqual(route, 'a; b')
+
+    def test_migration_adds_title_to_old_db(self):
+        db = Path(self.temp_dir) / 'old.db'
+        c = sqlite3.connect(str(db))
+        c.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, goal TEXT NOT NULL, started REAL NOT NULL, finished REAL, outcome TEXT DEFAULT '', steps TEXT DEFAULT '[]', route TEXT DEFAULT '', user_verdict TEXT DEFAULT '')")
+        c.execute("INSERT INTO runs (goal, started) VALUES ('old', 1.0)")
+        c.commit()
+        c.close()
+        m = Memory(db)
+        cols = [r['name'] for r in m.conn.execute('PRAGMA table_info(runs)')]
+        self.assertIn('title', cols)
+        self.assertEqual(m.get_run(1)['title'], '')
+        m.set_title(1, 'T')
+        self.assertEqual(m.get_run(1)['title'], 'T')
+        m.close()
 
 class TestToolBox(unittest.TestCase):
     def setUp(self):
